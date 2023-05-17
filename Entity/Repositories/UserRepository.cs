@@ -19,8 +19,7 @@ namespace Entity.Repositories
 
         public async Task<User> GetUserByTelegramId(long id)
         {
-            var result = await _context.Users.SingleOrDefaultAsync(u => u.TelegramUserId == id);
-            return result;
+            return await _context.Users.SingleOrDefaultAsync(u => u.TelegramUserId == id);
         }
 
         public async Task<User> AddUserAsync(string username, string firstName, string lastName, long telegramUserId)

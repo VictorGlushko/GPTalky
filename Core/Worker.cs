@@ -16,6 +16,9 @@ using OpenAI.GPT3.ObjectModels.RequestModels;
 using Message = Telegram.Bot.Types.Message;
 using System.Threading;
 using Entity.Repositories;
+using FFMpegCore;
+using FFMpegCore.Enums;
+using System;
 
 namespace Core;
 
@@ -32,12 +35,15 @@ public  class Worker
         _config = config;
         _dbContext = dbContext;
         _commander = commander;
-        //var wqe = ;
-        _telegramBotClient = new TelegramBotClient(config.GetValue<string>("TelegramApiKey"));
+        _telegramBotClient = new TelegramBotClient(_config.GetValue<string>("TelegramApiKey"));
         _openAiService = new OpenAIService(new OpenAiOptions()
         {
             ApiKey = _config.GetValue<string>("OpenAiApiKey")!,
         });
+
+
+        if (!Directory.Exists(StaticLines.TmpFolder))
+            Directory.CreateDirectory(StaticLines.TmpFolder);
     }
 
     public void Run()
@@ -58,41 +64,62 @@ public  class Worker
         );
     }
 
-    private async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update,
-        CancellationToken cancellationToken)
+    private async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
     {
-        switch (update.Message?.Type)
-        { 
-            case MessageType.Text:
+        try
+        {
+            if(update.Message?.From is null) return;
+
+
+            var chatId = update.Message.Chat.Id;
+            var telegramUserId = update.Message.From.Id;
+           
+
+            switch (update.Message?.Type)
             {
-                if (update.Message.Text[0] == '/') 
-                    await _commander.FigureOutAsync(update.Message.Text, update.Message.From);
-                else
-                    await HandleTextMessageAsync(botClient, update, cancellationToken);
+                case MessageType.Text:
+                {
+                    var message = update.Message.Text;
 
-            }break;
-                
-            case MessageType.Voice:
-            {
-                await GetTextMessageAsync(update);
+                    if (message?.First() == StaticLines.CommandSymbol)
+                    {
+                        await _commander.FigureOutAsync(message, update.Message.From);
+                    }
+                    else
+                    {
+                        await HandleTextMessageAsync(telegramUserId, chatId, message);
+                    }
 
-            }break;
+                }break;
 
-            default:
-                break;
+                case MessageType.Voice:
+                {
+                    var result = await GetTextMessageAsync(update.Message.Voice.FileId, update.Message.Chat.Id);
+
+                    if (result.IsSuccess)
+                    {
+                        await HandleTextMessageAsync(telegramUserId, chatId, result.resultText);
+                    }
+                    else
+                    {
+                        Console.WriteLine(result.resultText);
+                    }
+                }
+                    break;
+            }
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e);
         }
     }
 
-    private async Task HandleTextMessageAsync(ITelegramBotClient botClient, Update update,
-        CancellationToken cancellationToken)
+    private async Task HandleTextMessageAsync(long telegramUserId, long chatId, string message)
     {
-        var chatId = update.Message.Chat.Id;
-        var telegramUserId = update.Message.From.Id;
         var userFromDb = await _dbContext.Users.GetUserByTelegramId(telegramUserId);
-
         if (userFromDb is not null)
         {
-            await _dbContext.Messages.AddMessageAsync(userFromDb.Id, chatId, update.Message.Text,
+            await _dbContext.Messages.AddMessageAsync(userFromDb.Id, chatId, message,
                 ChatMessageRole.User);
             await _dbContext.CompleteAsync();
 
@@ -112,7 +139,7 @@ public  class Worker
                 var answer = completionResult.Choices.First().Message.Content;
                 await _dbContext.Messages.AddMessageAsync(userFromDb.Id, chatId, answer, ChatMessageRole.Assistant);
                 await _dbContext.CompleteAsync();
-                await botClient.SendTextMessageAsync(chatId, answer);
+                await _telegramBotClient.SendTextMessageAsync(chatId, answer);
             }
             else
             {
@@ -142,14 +169,56 @@ public  class Worker
             text: "Для начала общения используйте команду /start");
     }
 
+    
+    
 
-    private async Task<string> GetTextMessageAsync(Update update)
+    private async Task<(bool IsSuccess, string resultText)> GetTextMessageAsync(string fileId, long chatId)
     {
-        string fileId = update.Message.Voice.FileId;
+        CancellationToken ct = new CancellationToken();
 
+        //string fileId = update.Message.Voice.FileId;
 
-        return null;
-        //throw new NotImplementedException();
+        string inputOggFile  = Path.Combine(StaticLines.TmpFolder, $"{chatId}.ogg");
+        string outputMp3File = Path.Combine(StaticLines.TmpFolder, $"{chatId}.mp3");
+
+        await using (Stream fileStream = System.IO.File.Create(inputOggFile))
+        {
+            var file = await _telegramBotClient.GetInfoAndDownloadFileAsync(
+                fileId: fileId,
+                destination: fileStream,
+                cancellationToken: ct);
+        };
+
+        await FFMpegArguments
+                .FromFileInput(inputOggFile)
+                .OutputToFile(outputMp3File)
+                .ProcessAsynchronously();
+
+        var sampleFile = await System.IO.File.ReadAllBytesAsync(outputMp3File);
+
+        var audioResult = await _openAiService.Audio.CreateTranscription(new AudioCreateTranscriptionRequest
+        {
+            FileName = outputMp3File,
+            File = sampleFile,
+            Model = Models.WhisperV1,
+            ResponseFormat = StaticValues.AudioStatics.ResponseFormat.VerboseJson
+        });
+
+        if (audioResult.Successful)
+        {
+            return  (true, string.Join("\n", audioResult.Text));
+        }
+        else
+        {
+            if (audioResult.Error == null)
+            {
+                throw new Exception("Unknown Error");
+            }
+
+            var errorText = $"{audioResult.Error.Code}: {audioResult.Error.Message}";
+
+            return (false, errorText);
+        }
     }
 
     static Task HandlePollingErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken cancellationToken)
