@@ -19,6 +19,8 @@ using Entity.Repositories;
 using FFMpegCore;
 using FFMpegCore.Enums;
 using System;
+using Markdig;
+using Telegram.Bot.Types.ReplyMarkups;
 
 namespace Core;
 
@@ -48,7 +50,6 @@ public  class Worker
 
     public void Run()
     {
-
         CancellationTokenSource cts = new();
 
         ReceiverOptions receiverOptions = new()
@@ -73,7 +74,11 @@ public  class Worker
 
             var chatId = update.Message.Chat.Id;
             var telegramUserId = update.Message.From.Id;
-           
+
+            await botClient.SendChatActionAsync(chatId,ChatAction.Typing);
+
+    
+
 
             switch (update.Message?.Type)
             {
@@ -94,15 +99,15 @@ public  class Worker
 
                 case MessageType.Voice:
                 {
-                    var result = await GetTextMessageAsync(update.Message.Voice.FileId, update.Message.Chat.Id);
+                    var saveResult = await GetTextMessageAsync(update.Message.Voice.FileId, chatId);
 
-                    if (result.IsSuccess)
+                    if (saveResult.IsSuccess)
                     {
-                        await HandleTextMessageAsync(telegramUserId, chatId, result.resultText);
+                        await HandleTextMessageAsync(telegramUserId, chatId, saveResult.resultText);
                     }
                     else
                     {
-                        Console.WriteLine(result.resultText);
+                        Console.WriteLine(saveResult.resultText);
                     }
                 }
                     break;
@@ -139,7 +144,29 @@ public  class Worker
                 var answer = completionResult.Choices.First().Message.Content;
                 await _dbContext.Messages.AddMessageAsync(userFromDb.Id, chatId, answer, ChatMessageRole.Assistant);
                 await _dbContext.CompleteAsync();
-                await _telegramBotClient.SendTextMessageAsync(chatId, answer);
+
+
+                var testStr = "\"Привет! Вот все символы ASCII: \\n\\n! \\\" # $ % & ' ( ) * + , - . / 0 1 2 3 4 5 6 7 8 9 : ; < = > ? @ A B C D E F G H I J K L M N O P Q R S T U V W X Y Z [ \\ ] ^ _ a b c d e f g h i j k l m n o p q r s t u v w x y z { | } ~\"" +
+                              "sadsad`11111111`w" +
+                              "l;lk`2222222`';lk'" +
+                              "sss```333333```lkjl;";
+
+                var replacedAnswer = GPTalkyHelper.ReplaceSymbols(testStr);
+
+
+                try
+                {
+                    var result = await _telegramBotClient.SendTextMessageAsync(
+                        chatId: chatId,
+                        text: replacedAnswer,
+                        parseMode: ParseMode.MarkdownV2,
+                        disableNotification: true);
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine(e);
+                    throw;
+                }
             }
             else
             {
