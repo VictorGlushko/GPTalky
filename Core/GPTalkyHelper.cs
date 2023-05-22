@@ -17,7 +17,7 @@ namespace Core
 
             replacmentCharecters.Add('!', "\\!");
             replacmentCharecters.Add('.', "\\.");
-            replacmentCharecters.Add('{', "\\}");
+            replacmentCharecters.Add('{', "\\{");
             replacmentCharecters.Add('}', "\\}");
             replacmentCharecters.Add('|', "\\|");
             replacmentCharecters.Add('=', "\\=");

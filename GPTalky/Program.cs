@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Telegram.Bot;
 using Core;
+using CodeImageGenerator;
 
 namespace GPTalky
 {
@@ -47,6 +48,7 @@ namespace GPTalky
                     services.AddSingleton<Worker>();
                     services.AddSingleton<GpTalkDbContext>();
                     services.AddSingleton<Commander>();
+                    services.AddSingleton<Generator>();
                     services.AddSingleton<IUnitOfWork,UnitOfWork>();
 
                 

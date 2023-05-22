@@ -1,42 +1,37 @@
-﻿using Entity;
+﻿using CodeImageGenerator;
 using Entity.Entities;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using OpenAI.GPT3.Interfaces;
-using OpenAI.GPT3;
-using OpenAI.GPT3.Managers;
-using Telegram.Bot;
-using Telegram.Bot.Polling;
-using Telegram.Bot.Types.Enums;
-using Telegram.Bot.Types;
-using Telegram.Bot.Exceptions;
-using Microsoft.VisualBasic;
-using OpenAI.GPT3.ObjectModels;
-using OpenAI.GPT3.ObjectModels.RequestModels;
-using Message = Telegram.Bot.Types.Message;
-using System.Threading;
 using Entity.Repositories;
 using FFMpegCore;
-using FFMpegCore.Enums;
-using System;
-using Markdig;
-using Telegram.Bot.Types.ReplyMarkups;
+using Microsoft.Extensions.Configuration;
+using OpenAI.GPT3;
+using OpenAI.GPT3.Managers;
+using OpenAI.GPT3.ObjectModels;
+using OpenAI.GPT3.ObjectModels.RequestModels;
+using System.Text.RegularExpressions;
+using Telegram.Bot;
+using Telegram.Bot.Exceptions;
+using Telegram.Bot.Polling;
+using Telegram.Bot.Types;
+using Telegram.Bot.Types.Enums;
+using Message = Telegram.Bot.Types.Message;
 
 namespace Core;
 
-public  class Worker
+public class Worker
 {
     private readonly TelegramBotClient _telegramBotClient;
     private readonly IConfiguration _config;
     private readonly IUnitOfWork _dbContext;
     private readonly Commander _commander;
+    private readonly Generator _generator;
     private readonly OpenAIService _openAiService;
 
-    public Worker(IConfiguration config, IUnitOfWork dbContext, Commander commander)
+    public Worker(IConfiguration config, IUnitOfWork dbContext, Commander commander, Generator generator)
     {
         _config = config;
         _dbContext = dbContext;
         _commander = commander;
+        _generator = generator;
         _telegramBotClient = new TelegramBotClient(_config.GetValue<string>("TelegramApiKey"));
         _openAiService = new OpenAIService(new OpenAiOptions()
         {
@@ -69,47 +64,48 @@ public  class Worker
     {
         try
         {
-            if(update.Message?.From is null) return;
+            if (update.Message?.From is null) return;
 
 
             var chatId = update.Message.Chat.Id;
             var telegramUserId = update.Message.From.Id;
 
-            await botClient.SendChatActionAsync(chatId,ChatAction.Typing);
+            await botClient.SendChatActionAsync(chatId, ChatAction.Typing);
 
-    
+
 
 
             switch (update.Message?.Type)
             {
                 case MessageType.Text:
-                {
-                    var message = update.Message.Text;
-
-                    if (message?.First() == StaticLines.CommandSymbol)
                     {
-                        await _commander.FigureOutAsync(message, update.Message.From);
-                    }
-                    else
-                    {
-                        await HandleTextMessageAsync(telegramUserId, chatId, message);
-                    }
+                        var message = update.Message.Text;
 
-                }break;
+                        if (message?.First() == StaticLines.CommandSymbol)
+                        {
+                            await _commander.FigureOutAsync(message, update.Message.From);
+                        }
+                        else
+                        {
+                            await HandleTextMessageAsync(telegramUserId, chatId, message);
+                        }
+
+                    }
+                    break;
 
                 case MessageType.Voice:
-                {
-                    var saveResult = await GetTextMessageAsync(update.Message.Voice.FileId, chatId);
+                    {
+                        var saveResult = await GetTextMessageAsync(update.Message.Voice.FileId, chatId);
 
-                    if (saveResult.IsSuccess)
-                    {
-                        await HandleTextMessageAsync(telegramUserId, chatId, saveResult.resultText);
+                        if (saveResult.IsSuccess)
+                        {
+                            await HandleTextMessageAsync(telegramUserId, chatId, saveResult.resultText);
+                        }
+                        else
+                        {
+                            Console.WriteLine(saveResult.resultText);
+                        }
                     }
-                    else
-                    {
-                        Console.WriteLine(saveResult.resultText);
-                    }
-                }
                     break;
             }
         }
@@ -141,18 +137,20 @@ public  class Worker
 
             if (completionResult.Successful)
             {
+
+                var ansyrtwer = completionResult.Choices;
+
                 var answer = completionResult.Choices.First().Message.Content;
+
+               // answer = System.IO.File.ReadAllText("w:\\VSProjects\\GPTalky\\GPTalky\\bin\\Debug\\net6.0\\win-x64\\tmp\\longMessage.txt");
+
+          
                 await _dbContext.Messages.AddMessageAsync(userFromDb.Id, chatId, answer, ChatMessageRole.Assistant);
                 await _dbContext.CompleteAsync();
 
+                var replacedAnswer = GPTalkyHelper.ReplaceSymbols(answer);
 
-                var testStr = "\"Привет! Вот все символы ASCII: \\n\\n! \\\" # $ % & ' ( ) * + , - . / 0 1 2 3 4 5 6 7 8 9 : ; < = > ? @ A B C D E F G H I J K L M N O P Q R S T U V W X Y Z [ \\ ] ^ _ a b c d e f g h i j k l m n o p q r s t u v w x y z { | } ~\"" +
-                              "sadsad`11111111`w" +
-                              "l;lk`2222222`';lk'" +
-                              "sss```333333```lkjl;";
-
-                var replacedAnswer = GPTalkyHelper.ReplaceSymbols(testStr);
-
+                //await System.IO.File.WriteAllTextAsync($".\\tmp\\lastMessage.txt", answer);
 
                 try
                 {
@@ -166,6 +164,37 @@ public  class Worker
                 {
                     Console.WriteLine(e);
                     throw;
+                }
+
+
+              
+                Regex reg = new Regex(@"```([^\n]+)\n(.+?)```", RegexOptions.Singleline);
+
+                var matchesCollection = reg.Matches(answer);
+
+
+
+                if (matchesCollection.Count > 0)
+                {
+
+
+                    
+                    var qwe = matchesCollection.MaxBy(g =>g.Value.Length);
+                    var code = qwe.Groups[2].Value;
+
+
+                    var result = await _generator.GetCodeImageAsync(code);
+
+                    if (result.IsSuccess)
+                    {
+                        await _telegramBotClient.SendPhotoAsync(chatId, InputFile.FromStream(result.Stream));
+
+                    }
+                    else
+                    {
+                        Console.WriteLine(result.Error);
+                    }
+    
                 }
             }
             else
@@ -196,8 +225,20 @@ public  class Worker
             text: "Для начала общения используйте команду /start");
     }
 
-    
-    
+
+    public static byte[] ReadFully(Stream input)
+    {
+        byte[] buffer = new byte[16 * 1024];
+        using (MemoryStream ms = new MemoryStream())
+        {
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                ms.Write(buffer, 0, read);
+            }
+            return ms.ToArray();
+        }
+    }
 
     private async Task<(bool IsSuccess, string resultText)> GetTextMessageAsync(string fileId, long chatId)
     {
@@ -205,7 +246,7 @@ public  class Worker
 
         //string fileId = update.Message.Voice.FileId;
 
-        string inputOggFile  = Path.Combine(StaticLines.TmpFolder, $"{chatId}.ogg");
+        string inputOggFile = Path.Combine(StaticLines.TmpFolder, $"{chatId}.ogg");
         string outputMp3File = Path.Combine(StaticLines.TmpFolder, $"{chatId}.mp3");
 
         await using (Stream fileStream = System.IO.File.Create(inputOggFile))
@@ -233,7 +274,7 @@ public  class Worker
 
         if (audioResult.Successful)
         {
-            return  (true, string.Join("\n", audioResult.Text));
+            return (true, string.Join("\n", audioResult.Text));
         }
         else
         {
